@@ -170,7 +170,7 @@ private:
 	UPROPERTY()
 	TMap<FIntVector, TObjectPtr<AChunk>> LoadedChunks;
 
-	FIntVector LastPlayerChunkCoord = FIntVector(INT_MAX);
+	FIntVector LastPlayerChunkCoord = FIntVector(INT_MAX, INT_MAX, INT_MAX);
 	float      StreamingTimer       = 0.f;
 
 	/** Track last player layer Z coordinate for vertical streaming (Layers mode only). */

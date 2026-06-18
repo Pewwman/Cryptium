@@ -8,9 +8,9 @@
 // ---------------------------------------------------------------------------
 //  Chunk dimensions  (width × depth × height in blocks)
 // ---------------------------------------------------------------------------
-static constexpr int32 CHUNK_SIZE_X  = 16;
-static constexpr int32 CHUNK_SIZE_Y  = 16;
-static constexpr int32 CHUNK_SIZE_Z  = 128;
+static constexpr int32 CHUNK_SIZE_X  = 32;
+static constexpr int32 CHUNK_SIZE_Y  = 32;
+static constexpr int32 CHUNK_SIZE_Z  = 32;
 static constexpr float BLOCK_SIZE    = 100.f;  // Unreal units per block (exactly 1 m; 1 UU = 1 cm)
 
 // ---------------------------------------------------------------------------

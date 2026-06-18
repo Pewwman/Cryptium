@@ -15,6 +15,17 @@ const FBlockDefinition AVoxelWorld::DefaultDefinition = {};
 AVoxelWorld::AVoxelWorld()
 {
 	PrimaryActorTick.bCanEverTick = true;
+	
+	// Load default chunk material if not set in editor
+	if (!ChunkMaterial)
+	{
+		const FString DefaultMaterialPath = TEXT("/Game/Materials/M_VoxelChunk");
+		ChunkMaterial = LoadObject<UMaterialInterface>(nullptr, *DefaultMaterialPath);
+		if (!ChunkMaterial)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("VoxelWorld: Could not load default chunk material from %s"), *DefaultMaterialPath);
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -23,6 +34,8 @@ AVoxelWorld::AVoxelWorld()
 void AVoxelWorld::BeginPlay()
 {
 	Super::BeginPlay();
+	UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] VoxelWorld::BeginPlay START on instance %p at time=%.2f, WorldGenType=%d (0=Terrain, 1=Flat, 2=Layers)"), 
+		this, GetWorld()->GetTimeSeconds(), (int32)WorldGenType);
 	EnsureDefaultDefinitions();
 	BuildTextureAtlas();   // pack individual textures → runtime atlas before any chunks spawn
 
@@ -30,11 +43,12 @@ void AVoxelWorld::BeginPlay()
 	if (WorldGenType == EWorldGenType::Layers)
 	{
 		FVoxelGenLayers::InitializeLayerDefinitions(LayerDefinitions);
-		UE_LOG(LogTemp, Warning, TEXT("VoxelWorld: Initialized %d layers for Layers mode"), LayerDefinitions.Num());
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] VoxelWorld: Initialized %d layers for Layers mode"), LayerDefinitions.Num());
 	}
 
 	if (WorldGenType == EWorldGenType::Flat)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] VoxelWorld::BeginPlay: Loading FLAT world"));
 		LoadFlatWorld();
 	}
 	else
@@ -43,8 +57,9 @@ void AVoxelWorld::BeginPlay()
 		// has solid ground to land on when they are teleported in BeginPlay.
 		// Without this, the first streaming pass doesn't fire until
 		// VOXEL_STREAM_INTERVAL seconds into Tick, which is too late.
-		UE_LOG(LogTemp, Warning, TEXT("VoxelWorld: Calling UpdateStreamingPosition at FVector::ZeroVector"));
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] VoxelWorld::BeginPlay: Loading non-Flat world, calling UpdateStreamingPosition at origin"));
 		UpdateStreamingPosition(FVector::ZeroVector);
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] VoxelWorld::BeginPlay COMPLETE - Loaded %d chunks"), LoadedChunks.Num());
 	}
 }
 
@@ -592,9 +607,14 @@ void AVoxelWorld::BuildTextureAtlas()
 
 void AVoxelWorld::UpdateStreamingPosition(FVector WorldPosition)
 {
+	UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] UpdateStreamingPosition CALLED - WorldPosition=(%.1f, %.1f, %.1f), WorldGenType=%d"), 
+		WorldPosition.X, WorldPosition.Y, WorldPosition.Z, (int32)WorldGenType);
+	
 	FIntVector PlayerChunk = WorldPosToChunkCoord(WorldPosition);
-	UE_LOG(LogTemp, Warning, TEXT("UpdateStreamingPosition: WorldPosition=(%.1f, %.1f, %.1f) → PlayerChunk=(%d,%d,%d)"), 
-		WorldPosition.X, WorldPosition.Y, WorldPosition.Z, PlayerChunk.X, PlayerChunk.Y, PlayerChunk.Z);
+	UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] UpdateStreamingPosition: PlayerChunk=(%d,%d,%d), RenderDistance=%d"), 
+		PlayerChunk.X, PlayerChunk.Y, PlayerChunk.Z, RenderDistance);
+	UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] [INITIAL] LastPlayerChunkCoord=(%d,%d,%d)"), 
+		LastPlayerChunkCoord.X, LastPlayerChunkCoord.Y, LastPlayerChunkCoord.Z);
 
 	if (WorldGenType == EWorldGenType::Layers)
 	{
@@ -661,9 +681,18 @@ void AVoxelWorld::UpdateStreamingPosition(FVector WorldPosition)
 	{
 		// XY-only streaming for Terrain and Flat modes
 		// Force Z=0 (all terrain lives in surface chunks)
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] Entering Terrain/Flat branch"));
 		PlayerChunk.Z = 0;
 
-		if (PlayerChunk == LastPlayerChunkCoord) return;
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] Checking: PlayerChunk=(%d,%d,%d) vs LastPlayerChunkCoord=(%d,%d,%d)"), 
+			PlayerChunk.X, PlayerChunk.Y, PlayerChunk.Z, LastPlayerChunkCoord.X, LastPlayerChunkCoord.Y, LastPlayerChunkCoord.Z);
+		
+		if (PlayerChunk == LastPlayerChunkCoord) 
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] PlayerChunk hasn't changed, returning early"));
+			return;
+		}
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] PlayerChunk changed, proceeding to load/unload chunks"));
 		LastPlayerChunkCoord = PlayerChunk;
 
 		// Collect desired chunk set
@@ -681,6 +710,10 @@ void AVoxelWorld::UpdateStreamingPosition(FVector WorldPosition)
 		{
 			if (!LoadedChunks.Contains(Coord))
 			{
+				if (Coord.X == 0 && Coord.Y == 0 && Coord.Z == 0)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] UpdateStreamingPosition TERRAIN: About to LoadChunk (0,0,0)"));
+				}
 				LoadChunk(Coord);
 			}
 		}
@@ -757,21 +790,25 @@ void AVoxelWorld::GenerateFlatChunkData(FIntVector Coord, TArray<EBlockType>& Ou
 
 void AVoxelWorld::LoadChunk(FIntVector Coord)
 {
-	UE_LOG(LogTemp, Warning, TEXT("LoadChunk: Loading chunk at (%d,%d,%d)"), Coord.X, Coord.Y, Coord.Z);
+	UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] LoadChunk START: Loading chunk at (%d,%d,%d)"), Coord.X, Coord.Y, Coord.Z);
 	
 	// Generate block data using the selected generation mode
 	TArray<EBlockType> Blocks;
 	if (WorldGenType == EWorldGenType::Flat)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] LoadChunk: Generating FLAT data"));
 		GenerateFlatChunkData(Coord, Blocks);
 	}
 	else if (WorldGenType == EWorldGenType::Layers)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] LoadChunk: Generating LAYERED data"));
 		GenerateLayeredChunkData(Coord, Blocks);
 	}
 	else
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] LoadChunk: Generating TERRAIN data for chunk (%d,%d,%d)"), Coord.X, Coord.Y, Coord.Z);
 		GenerateChunkData(Coord, Blocks);
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] LoadChunk: TERRAIN generation completed, Blocks.Num()=%d"), Blocks.Num());
 	}
 
 	// Spawn chunk actor
@@ -791,7 +828,9 @@ void AVoxelWorld::LoadChunk(FIntVector Coord)
 	NewChunk->VoxelWorld       = this;
 	// Flat worlds and layered worlds need sync collision for proper setup
 	NewChunk->bUseSyncCollision = (WorldGenType == EWorldGenType::Flat || WorldGenType == EWorldGenType::Layers);
+	UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] LoadChunk: Spawned chunk, calling Initialize with bUseSyncCollision=%d"), NewChunk->bUseSyncCollision);
 	NewChunk->Initialize(Blocks);
+	UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] LoadChunk: Initialize completed"));
 
 	LoadedChunks.Add(Coord, NewChunk);
 
@@ -821,8 +860,12 @@ void AVoxelWorld::UnloadChunk(FIntVector Coord)
 
 FVector AVoxelWorld::GetPlayerSpawnLocation() const
 {
+	UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] GetPlayerSpawnLocation CALLED on instance %p - WorldGenType=%d (Checking: 0=Terrain, 1=Flat, 2=Layers)"), 
+		this, (int32)WorldGenType);
+	
 	if (WorldGenType == EWorldGenType::Flat)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] GetPlayerSpawnLocation: Taking FLAT branch"));
 		// Center of the flat chunk grid in XY.
 		const float GridHalfX = (FlatExtentChunks * CHUNK_SIZE_X * BLOCK_SIZE) * 0.5f;
 		const float GridHalfY = (FlatExtentChunks * CHUNK_SIZE_Y * BLOCK_SIZE) * 0.5f;
@@ -839,6 +882,7 @@ FVector AVoxelWorld::GetPlayerSpawnLocation() const
 	}
 	else if (WorldGenType == EWorldGenType::Layers)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] GetPlayerSpawnLocation: Taking LAYERS branch"));
 		// Layered world: spawn at the surface layer (chunk Z=0), on top of the grass.
 		// Roughly in the middle of the first chunk in XY space.
 		const float SpawnX = CHUNK_SIZE_X * BLOCK_SIZE * 0.5f;
@@ -848,12 +892,87 @@ FVector AVoxelWorld::GetPlayerSpawnLocation() const
 		// Spawn roughly 2 blocks above the surface for comfortable clearance.
 		const float SpawnZ = (2 + 1) * BLOCK_SIZE + 96.f + 10.f;  // 3 blocks up + capsule + small buffer
 		
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] GetPlayerSpawnLocation (Layers mode): SpawnZ=%.1f (3 blocks * 100 + capsule 96 + buffer 10)"), SpawnZ);
 		return FVector(SpawnX, SpawnY, SpawnZ);
 	}
 	else
 	{
-		// Terrain: spawn above the maximum possible surface height at the origin.
-		const float SpawnZ = (50 + 30 + 1) * BLOCK_SIZE + 96.f + 10.f;  // BASE_HEIGHT + HEIGHT_RANGE + 1 block gap
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] GetPlayerSpawnLocation: Taking TERRAIN branch (else)"));
+		// Terrain: scan chunk (0,0,0) from top to find actual surface height.
+		// This is simpler and more reliable than trying to predict height from noise.
+		
+		const TObjectPtr<AChunk>* SpawnChunk = LoadedChunks.Find(FIntVector(0, 0, 0));
+		float SpawnZ = 5000.f;  // Fallback spawn height if chunk not loaded
+		
+		// First, log all loaded chunks in the spawn area to understand what's available
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] All chunks in spawn region (checking -2 to 2 in all axes):"));
+		int32 ChunkCount = 0;
+		for (int32 CX = -2; CX <= 2; CX++)
+		{
+			for (int32 CY = -2; CY <= 2; CY++)
+			{
+				for (int32 CZ = -1; CZ <= 2; CZ++)
+				{
+					const TObjectPtr<AChunk>* Chunk = LoadedChunks.Find(FIntVector(CX, CY, CZ));
+					if (Chunk && *Chunk)
+					{
+						ChunkCount++;
+						UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG]   Chunk (%d,%d,%d) EXISTS at world Z=%.0f to %.0f"), CX, CY, CZ, 
+							static_cast<float>(CZ * CHUNK_SIZE_Z * (int32)BLOCK_SIZE),
+							static_cast<float>((CZ+1) * CHUNK_SIZE_Z * (int32)BLOCK_SIZE));
+					}
+				}
+			}
+		}
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] Total chunks in region: %d"), ChunkCount);
+		
+		if (SpawnChunk && *SpawnChunk)
+		{
+			// Scan from top of chunk downward to find first solid block at center (X=8, Y=8)
+			int32 SurfaceBlockZ = 0;
+			const int32 ScanX = CHUNK_SIZE_X / 2;  // Center of chunk
+			const int32 ScanY = CHUNK_SIZE_Y / 2;
+			
+			UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] Scanning chunk (0,0,0) at center (X=%d, Y=%d) from top downward:"), ScanX, ScanY);
+			
+			bool bFoundSurface = false;
+			for (int32 Z = CHUNK_SIZE_Z - 1; Z >= 0; --Z)
+			{
+				EBlockType Block = (*SpawnChunk)->GetBlock(ScanX, ScanY, Z);
+				
+				// Log ALL blocks to see the full column
+				UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG]   Z=%2d: BlockType=%d (Air=0, Grass=1, Dirt=2, Stone=3)"), Z, (int32)Block);
+				
+				if (!bFoundSurface && Block != EBlockType::Air && Block != EBlockType::Water && Block != EBlockType::Lava)
+				{
+					SurfaceBlockZ = Z;
+					bFoundSurface = true;
+					UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG]   >>> SURFACE FOUND at Z=%d (BlockType=%d)"), SurfaceBlockZ, (int32)Block);
+					break;
+				}
+			}
+			
+			if (!bFoundSurface)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG]   WARNING: No solid surface found! Entire column is Air/Water/Lava"));
+			}
+			
+			// Spawn 1 block above the surface
+			// WorldZ = ChunkZ * CHUNK_HEIGHT + BlockZ
+			const int32 ChunkWorldBlockZ = 0 * CHUNK_SIZE_Z;  // Chunk (0,0,0) starts at block 0
+			const int32 TotalBlockZ = ChunkWorldBlockZ + SurfaceBlockZ;
+			SpawnZ = (TotalBlockZ + 1) * BLOCK_SIZE + 96.f + 100.f;  // Surface + capsule + small buffer
+			
+			UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] GetPlayerSpawnLocation: SurfaceBlockZ=%d (in chunk), ChunkWorldZ=%d, TotalBlockZ=%d, SpawnZ=%.1f UE units"), 
+				SurfaceBlockZ, ChunkWorldBlockZ, TotalBlockZ, SpawnZ);
+			UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG]   Calculation: (TotalBlockZ=%d + 1) * BLOCK_SIZE(100) + capsule(96) + buffer(100) = %.1f"), 
+				TotalBlockZ, SpawnZ);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] GetPlayerSpawnLocation: Chunk (0,0,0) not loaded yet, using fallback spawn height"));
+		}
+		
 		return FVector(0.f, 0.f, SpawnZ);
 	}
 }
@@ -988,11 +1107,18 @@ void AVoxelWorld::GenerateChunkData(FIntVector Coord, TArray<EBlockType>& OutBlo
 	OutBlocks.SetNum(CHUNK_SIZE_X * CHUNK_SIZE_Y * CHUNK_SIZE_Z);
 
 	// Terrain parameters
-	static constexpr int32 BASE_HEIGHT  = 50;  // minimum surface Z
-	static constexpr int32 HEIGHT_RANGE = 30;  // maximum extra Z above base
+	static constexpr int32 BASE_HEIGHT  = 16;  // minimum surface Z (adjusted for 32-block chunks)
+	static constexpr int32 HEIGHT_RANGE = 12;  // maximum extra Z above base
 	static constexpr int32 SOLID_DEPTH  =  5;  // guaranteed solid blocks below surface
 	                                            // (top block = Grass, next 4 = Dirt)
 	static constexpr int32 DIRT_DEPTH   =  4;  // how many of those 5 are Dirt (rest = Stone)
+
+	// Log for spawn chunk to debug terrain generation
+	bool bLogThisChunk = (Coord.X == 0 && Coord.Y == 0 && Coord.Z == 0);
+	if (bLogThisChunk)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] GenerateChunkData START for Chunk (0,0,0)"));
+	}
 
 	for (int32 X = 0; X < CHUNK_SIZE_X; ++X)
 	{
@@ -1006,6 +1132,15 @@ void AVoxelWorld::GenerateChunkData(FIntVector Coord, TArray<EBlockType>& OutBlo
 
 			// Solid band boundaries (no air pockets – every Z <= SurfaceZ is filled)
 			const int32 DirtBottomZ = SurfaceZ - DIRT_DEPTH;   // last dirt layer
+
+			// Log at the same position the spawn scan will check
+			if (bLogThisChunk && X == 16 && Y == 16)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG] TERRAIN GEN - Chunk (0,0,0) at scan position (X=16,Y=16): Noise=%.3f, SurfaceZ=%d"), 
+					Noise, SurfaceZ);
+				UE_LOG(LogTemp, Warning, TEXT("[SPAWN_DIAG]   Will fill: Air if Z>%d, Grass if Z=%d, Dirt if %d<=Z<%d, Stone if Z<%d"), 
+					SurfaceZ, SurfaceZ, DirtBottomZ, SurfaceZ, DirtBottomZ);
+			}
 
 			for (int32 Z = 0; Z < CHUNK_SIZE_Z; ++Z)
 			{
