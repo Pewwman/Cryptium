@@ -27,12 +27,6 @@ enum class EWorldGenType : uint8
 	 * No streaming – good for building / testing.
 	 */
 	Flat    = 1  UMETA(DisplayName = "Flat"),
-
-	/**
-	 * 3D layered world with vertical streaming. Multiple layers below and above
-	 * the surface. Each layer has different terrain, ores, and objects.
-	 */
-	Layers  = 2  UMETA(DisplayName = "Layered (3D Underground)"),
 };
 
 // ---------------------------------------------------------------------------
