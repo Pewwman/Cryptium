@@ -9,6 +9,7 @@
 #include "VoxelTypes.h"
 #include "Engine/Texture2D.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "WorldGen/WorldGenerationManager.h"
 #include "VoxelWorld.generated.h"
 
 class AChunk;
@@ -173,21 +174,18 @@ private:
 	/** Spawn the entire flat grid at BeginPlay. */
 	void LoadFlatWorld();
 
-	/** Fill OutBlocks with terrain data for ChunkCoord (procedural generation). */
-	void GenerateChunkData(FIntVector Coord, TArray<EBlockType>& OutBlocks) const;
-
 	/** Fill OutBlocks with flat-plane data (constant surface height). */
 	void GenerateFlatChunkData(FIntVector Coord, TArray<EBlockType>& OutBlocks) const;
 
-	/**
-	 * Second-pass surface object placement (boulders, trees, etc.).
-	 * Runs after the base terrain fill and writes directly into InOutBlocks.
-	 * Add new object types here as the game grows.
-	 */
-	void GenerateSurfaceObjects(FIntVector Coord, TArray<EBlockType>& InOutBlocks) const;
+	/** World generation manager — routes each non-flat chunk to its level generator. */
+	TSharedPtr<FWorldGenerationManager> WorldGenManager;
 
-	/** Simple multi-octave value-noise height function. Returns 0..1. */
-	static float SampleTerrainHeight(float WorldX, float WorldY);
+	/**
+	 * Defines the vertical layer stack for procedural world generation.
+	 * Edit this one method to reorder, add, or remove underground layers —
+	 * no other code needs to change. Called once from BeginPlay.
+	 */
+	void ConfigureLayerStack();
 
 	/** True once the flat grid has been spawned (prevents double-spawn). */
 	bool bFlatLoaded = false;

@@ -5,6 +5,11 @@
 #include "Engine/Texture2D.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "TextureResource.h"
+#include "WorldGen/LayerSurface.h"         // FSurfaceLevelGenerator
+#include "WorldGen/LayerCrystalCaves.h"      // FCrystalCavesLevelGenerator
+#include "WorldGen/LayerPrimordialCavern.h"             // FPrimordialCavernLevelGenerator
+#include "WorldGen/LayerHellscape.h"        // FHellscapeLevelGenerator
+#include "WorldGen/LayerFrostbitten.h"      // FFrostbittenLevelGenerator
 
 // ---------------------------------------------------------------------------
 //  Default block definitions (used when the designer hasn't set any in-editor)
@@ -32,6 +37,10 @@ void AVoxelWorld::BeginPlay()
 	
 	BuildTextureAtlas();   // pack individual textures → runtime atlas before any chunks spawn
 
+	// Build the world generation stack.
+	WorldGenManager = MakeShared<FWorldGenerationManager>();
+	ConfigureLayerStack();  // Edit ConfigureLayerStack() to reorder, add, or remove layers
+
 	if (WorldGenType == EWorldGenType::Flat)
 	{
 		LoadFlatWorld();
@@ -44,6 +53,34 @@ void AVoxelWorld::BeginPlay()
 		// VOXEL_STREAM_INTERVAL seconds into Tick, which is too late.
 		UpdateStreamingPosition(FVector::ZeroVector);
 	}
+}
+
+// ---------------------------------------------------------------------------
+//  Layer stack configuration
+//  *** Edit this function to reorder, add, or remove underground layers. ***
+//
+//  Rules:
+//    - Level 0 must always be the surface generator.
+//    - Levels are stacked top-down; index N sits directly below index N-1.
+//    - Each generator declares its own depth via GetDepthInChunks()
+//      (default 8 chunks = 256 blocks). Change the override there, not here.
+//    - To insert a new layer between two existing ones, renumber those below it.
+//    - To swap two layers, just swap their RegisterLevel indices.
+//
+//  Current stack:
+//    0  Surface
+//    1  Crystal Caves      (  -1 ..  -256 )
+//    2  Primordial Cavern  ( -257 ..  -512 )
+//    3  Hellscape          ( -513 ..  -768 )
+//    4  Frostbitten        ( -769 .. -1024 )
+// ---------------------------------------------------------------------------
+void AVoxelWorld::ConfigureLayerStack()
+{
+	WorldGenManager->RegisterLevel(0, MakeShared<FSurfaceLevelGenerator>());
+	WorldGenManager->RegisterLevel(1, MakeShared<FCrystalCavesLevelGenerator>());
+	WorldGenManager->RegisterLevel(2, MakeShared<FPrimordialCavernLevelGenerator>());
+	WorldGenManager->RegisterLevel(3, MakeShared<FHellscapeLevelGenerator>());
+	WorldGenManager->RegisterLevel(4, MakeShared<FFrostbittenLevelGenerator>());
 }
 
 void AVoxelWorld::EnsureDefaultDefinitions()
@@ -693,18 +730,8 @@ void AVoxelWorld::GenerateFlatChunkData(FIntVector Coord, TArray<EBlockType>& Ou
 
 void AVoxelWorld::LoadChunk(FIntVector Coord)
 {
-	// Generate block data using the selected generation mode
-	TArray<EBlockType> Blocks;
-	if (WorldGenType == EWorldGenType::Flat)
-	{
-		GenerateFlatChunkData(Coord, Blocks);
-	}
-	else
-	{
-		GenerateChunkData(Coord, Blocks);
-	}
-
-	// Spawn chunk actor
+	// Spawn chunk actor first, then fill it with generated block data.
+	// Generators receive the spawned chunk and call Initialize() internally.
 	const FVector WorldPos(
 		static_cast<float>(Coord.X) * CHUNK_SIZE_X * BLOCK_SIZE,
 		static_cast<float>(Coord.Y) * CHUNK_SIZE_Y * BLOCK_SIZE,
@@ -717,11 +744,22 @@ void AVoxelWorld::LoadChunk(FIntVector Coord)
 	AChunk* NewChunk = GetWorld()->SpawnActor<AChunk>(AChunk::StaticClass(), WorldPos, FRotator::ZeroRotator, Params);
 	if (!NewChunk) return;
 
-	NewChunk->ChunkCoord       = Coord;
-	NewChunk->VoxelWorld       = this;
+	NewChunk->ChunkCoord        = Coord;
+	NewChunk->VoxelWorld        = this;
 	// Flat worlds need sync collision for proper setup
 	NewChunk->bUseSyncCollision = (WorldGenType == EWorldGenType::Flat);
-	NewChunk->Initialize(Blocks);
+
+	if (WorldGenType == EWorldGenType::Flat)
+	{
+		TArray<EBlockType> Blocks;
+		GenerateFlatChunkData(Coord, Blocks);
+		NewChunk->Initialize(Blocks);
+	}
+	else
+	{
+		// Route to the correct level generator; Initialize() is called inside.
+		WorldGenManager->RouteChunkGeneration(*NewChunk, Coord.X, Coord.Y, Coord.Z);
+	}
 
 	LoadedChunks.Add(Coord, NewChunk);
 
@@ -770,8 +808,8 @@ FVector AVoxelWorld::GetPlayerSpawnLocation() const
 	else
 	{
 		// Terrain: Query actual height at origin and spawn just above terrain surface
-		const float TerrainNoise = SampleTerrainHeight(0.f, 0.f);  // Sample at origin
-		const int32 TerrainSurfaceZ = 50 + FMath::RoundToInt(TerrainNoise * 30.f);  // BASE_HEIGHT + HEIGHT_RANGE
+		const float TerrainNoise = FSurfaceLevelGenerator::SampleHeight(0.f, 0.f);
+		const int32 TerrainSurfaceZ = FSurfaceLevelGenerator::BASE_HEIGHT + FMath::RoundToInt(TerrainNoise * static_cast<float>(FSurfaceLevelGenerator::HEIGHT_RANGE));
 		
 		// Spawn just 2 blocks above the terrain surface (where solid blocks are)
 		// Player's capsule will land on the grass/dirt layer below
@@ -782,278 +820,4 @@ FVector AVoxelWorld::GetPlayerSpawnLocation() const
 	}
 }
 
-// ---------------------------------------------------------------------------
-//  Terrain generation
-// ---------------------------------------------------------------------------
-
-// Simple value-noise implementation (no external libraries required).
-
-// ---------------------------------------------------------------------------
-//  2D Perlin gradient noise (Ken Perlin's improved algorithm, 2002)
-// ---------------------------------------------------------------------------
-
-// Fixed 256-entry permutation table (doubled to 512 to avoid modulo in lookup).
-static const uint8 GPerm[512] =
-{
-	151,160,137, 91, 90, 15,131, 13,201, 95, 96, 53,194,233,  7,225,
-	140, 36,103, 30, 69,142,  8, 99, 37,240, 21, 10, 23,190,  6,148,
-	247,120,234, 75,  0, 26,197, 62, 94,252,219,203,117, 35, 11, 32,
-	 57,177, 33, 88,237,149, 56, 87,174, 20,125,136,171,168, 68,175,
-	 74,165, 71,134,139, 48, 27,166, 77,146,158,231, 83,111,229,122,
-	 60,211,133,230,220,105, 92, 41, 55, 46,245, 40,244,102,143, 54,
-	 65, 25, 63,161,  1,216, 80, 73,209, 76,132,187,208, 89, 18,169,
-	200,196,135,130,116,188,159, 86,164,100,109,198,173,186,  3, 64,
-	 52,217,226,250,124,123,  5,202, 38,147,118,126,255, 82, 85,212,
-	207,206, 59,227, 47, 16, 58, 17,182,189, 28, 42,223,183,170,213,
-	119,248,152,  2, 44,154,163, 70,221,153,101,155,167, 43,172,  9,
-	129, 22, 39,253, 19, 98,108,110, 79,113,224,232,178,185,112,104,
-	218,246, 97,228,251, 34,242,193,238,210,144, 12,191,179,162,241,
-	 81, 51,145,235,249, 14,239,107, 49,192,214, 31,181,199,106,157,
-	184, 84,204,176,115,121, 50, 45,127,  4,150,254,138,236,205, 93,
-	222,114, 67, 29, 24, 72,243,141,128,195, 78, 66,215, 61,156,180,
-	// repeat
-	151,160,137, 91, 90, 15,131, 13,201, 95, 96, 53,194,233,  7,225,
-	140, 36,103, 30, 69,142,  8, 99, 37,240, 21, 10, 23,190,  6,148,
-	247,120,234, 75,  0, 26,197, 62, 94,252,219,203,117, 35, 11, 32,
-	 57,177, 33, 88,237,149, 56, 87,174, 20,125,136,171,168, 68,175,
-	 74,165, 71,134,139, 48, 27,166, 77,146,158,231, 83,111,229,122,
-	 60,211,133,230,220,105, 92, 41, 55, 46,245, 40,244,102,143, 54,
-	 65, 25, 63,161,  1,216, 80, 73,209, 76,132,187,208, 89, 18,169,
-	200,196,135,130,116,188,159, 86,164,100,109,198,173,186,  3, 64,
-	 52,217,226,250,124,123,  5,202, 38,147,118,126,255, 82, 85,212,
-	207,206, 59,227, 47, 16, 58, 17,182,189, 28, 42,223,183,170,213,
-	119,248,152,  2, 44,154,163, 70,221,153,101,155,167, 43,172,  9,
-	129, 22, 39,253, 19, 98,108,110, 79,113,224,232,178,185,112,104,
-	218,246, 97,228,251, 34,242,193,238,210,144, 12,191,179,162,241,
-	 81, 51,145,235,249, 14,239,107, 49,192,214, 31,181,199,106,157,
-	184, 84,204,176,115,121, 50, 45,127,  4,150,254,138,236,205, 93,
-	222,114, 67, 29, 24, 72,243,141,128,195, 78, 66,215, 61,156,180,
-};
-
-// Quintic fade curve: 6t^5 − 15t^4 + 10t^3  (zero first AND second derivative at 0 and 1)
-static FORCEINLINE float PerlinFade(float T)
-{
-	return T * T * T * (T * (T * 6.f - 15.f) + 10.f);
-}
-
-// 2D gradient dot-product using 8 evenly-spaced unit vectors
-static FORCEINLINE float PerlinGrad2(uint8 Hash, float X, float Y)
-{
-	switch (Hash & 7)
-	{
-		case 0: return  X + Y;
-		case 1: return -X + Y;
-		case 2: return  X - Y;
-		case 3: return -X - Y;
-		case 4: return  X;
-		case 5: return -X;
-		case 6: return  Y;
-		case 7: return -Y;
-		default: return 0.f;
-	}
-}
-
-// Single-octave 2D Perlin noise.  Returns roughly −1..1.
-static float Perlin2D(float X, float Y)
-{
-	const int32 IX = FMath::FloorToInt(X) & 255;
-	const int32 IY = FMath::FloorToInt(Y) & 255;
-	const float FX = X - FMath::FloorToInt(X);
-	const float FY = Y - FMath::FloorToInt(Y);
-
-	const float UX = PerlinFade(FX);
-	const float UY = PerlinFade(FY);
-
-	const uint8 A  = GPerm[IX    ] + IY;
-	const uint8 B  = GPerm[IX + 1] + IY;
-
-	return FMath::Lerp(
-		FMath::Lerp(PerlinGrad2(GPerm[A    ], FX,       FY      ),
-		            PerlinGrad2(GPerm[B    ], FX - 1.f, FY      ), UX),
-		FMath::Lerp(PerlinGrad2(GPerm[A + 1], FX,       FY - 1.f),
-		            PerlinGrad2(GPerm[B + 1], FX - 1.f, FY - 1.f), UX),
-		UY
-	);
-}
-
-// Fractal Brownian Motion: sum of Perlin octaves.  Returns 0..1.
-float AVoxelWorld::SampleTerrainHeight(float WX, float WY)
-{
-	float Value = 0.f;
-	float Amp   = 1.f;
-	float Freq  = 1.f / 128.f;   // ~1 hill per 128 blocks at the base octave
-	float Total = 0.f;
-
-	// 5 octaves: large rolling hills down to small surface bumps
-	for (int32 Oct = 0; Oct < 5; ++Oct)
-	{
-		Value += Perlin2D(WX * Freq, WY * Freq) * Amp;
-		Total += Amp;
-		Amp   *= 0.5f;
-		Freq  *= 2.f;
-	}
-
-	// Remap from roughly −1..1 → 0..1
-	return (Value / Total) * 0.5f + 0.5f;
-}
-
-void AVoxelWorld::GenerateChunkData(FIntVector Coord, TArray<EBlockType>& OutBlocks) const
-{
-	OutBlocks.SetNum(CHUNK_SIZE_X * CHUNK_SIZE_Y * CHUNK_SIZE_Z);
-
-	// Terrain parameters
-	static constexpr int32 BASE_HEIGHT  = 50;  // minimum surface Z
-	static constexpr int32 HEIGHT_RANGE = 30;  // maximum extra Z above base
-	static constexpr int32 SOLID_DEPTH  =  5;  // guaranteed solid blocks below surface
-	                                            // (top block = Grass, next 4 = Dirt)
-	static constexpr int32 DIRT_DEPTH   =  4;  // how many of those 5 are Dirt (rest = Stone)
-
-	for (int32 X = 0; X < CHUNK_SIZE_X; ++X)
-	{
-		for (int32 Y = 0; Y < CHUNK_SIZE_Y; ++Y)
-		{
-			const float WX = static_cast<float>(Coord.X * CHUNK_SIZE_X + X);
-			const float WY = static_cast<float>(Coord.Y * CHUNK_SIZE_Y + Y);
-
-			const float Noise    = SampleTerrainHeight(WX, WY);              // 0..1
-			const int32 SurfaceZ = BASE_HEIGHT + FMath::RoundToInt(Noise * static_cast<float>(HEIGHT_RANGE));
-
-			// Solid band boundaries (no air pockets – every Z <= SurfaceZ is filled)
-			const int32 DirtBottomZ = SurfaceZ - DIRT_DEPTH;   // last dirt layer
-
-			for (int32 Z = 0; Z < CHUNK_SIZE_Z; ++Z)
-			{
-				const int32 WorldZ = Coord.Z * CHUNK_SIZE_Z + Z;  // Convert local Z to world Z
-				EBlockType Type;
-
-				if (WorldZ > SurfaceZ)
-				{
-					Type = EBlockType::Air;       // above surface → always air
-				}
-				else if (WorldZ == SurfaceZ)
-				{
-					Type = EBlockType::Grass;     // top block
-				}
-				else if (WorldZ >= DirtBottomZ)
-				{
-					Type = EBlockType::Dirt;      // DIRT_DEPTH blocks of dirt
-				}
-				else
-				{
-					Type = EBlockType::Stone;     // everything else solid stone
-				}
-
-				OutBlocks[X + CHUNK_SIZE_X * (Y + CHUNK_SIZE_Y * Z)] = Type;
-			}
-		}
-	}
-
-	// Second pass: place surface objects (boulders, trees, …) on top of the terrain.
-	GenerateSurfaceObjects(Coord, OutBlocks);
-}
-
-// ---------------------------------------------------------------------------
-//  Surface object generation
-// ---------------------------------------------------------------------------
-
-// Deterministic integer hash of a chunk coordinate + salt.
-// Used as a cheap per-chunk seed so object placement is fully reproducible.
-static uint32 VoxelChunkHash(FIntVector Coord, uint32 Salt)
-{
-	uint32 H = (uint32)(Coord.X * 2654435761u)
-	         ^ (uint32)(Coord.Y *  805459861u)
-	         ^ (uint32)(Coord.Z * 1234567891u)
-	         ^ Salt;
-	H ^= H >> 16;
-	H *= 0x45d9f3bu;
-	H ^= H >> 16;
-	return H;
-}
-
-// Returns the highest solid (non-Air) Z in the block array at column (X, Y), or -1.
-static int32 FindSurfaceZ(const TArray<EBlockType>& Blocks, int32 X, int32 Y)
-{
-	for (int32 Z = CHUNK_SIZE_Z - 1; Z >= 0; --Z)
-	{
-		if (Blocks[X + CHUNK_SIZE_X * (Y + CHUNK_SIZE_Y * Z)] != EBlockType::Air)
-			return Z;
-	}
-	return -1;
-}
-
-// Writes a block into the flat array, silently ignoring out-of-bounds positions.
-static void PlaceBlockInArray(TArray<EBlockType>& Blocks, int32 X, int32 Y, int32 Z, EBlockType Type)
-{
-	if (X < 0 || X >= CHUNK_SIZE_X ||
-	    Y < 0 || Y >= CHUNK_SIZE_Y ||
-	    Z < 0 || Z >= CHUNK_SIZE_Z) return;
-	Blocks[X + CHUNK_SIZE_X * (Y + CHUNK_SIZE_Y * Z)] = Type;
-}
-
-void AVoxelWorld::GenerateSurfaceObjects(FIntVector Coord, TArray<EBlockType>& InOutBlocks) const
-{
-	// -----------------------------------------------------------------------
-	//  Boulder pass
-	//
-	//  Roughly 1 boulder per 8 terrain chunks.
-	//  Shape: misshapen ellipsoid of Stone, diameter 3–5 blocks, resting on
-	//  the grass surface with ~30% of the radius embedded so it looks grounded.
-	//
-	//  Add more object types below this block as the game grows.
-	// -----------------------------------------------------------------------
-	{
-		// 1-in-8 spawn chance, seeded by chunk coordinate.
-		if ((VoxelChunkHash(Coord, 0xBEEF1234u) % 8) != 0) return;
-
-		// Pick a centre XY in [4, 11] so the boulder stays fully inside the chunk
-		// even at the maximum radius (2.5 blocks + 1-block pad = 3.5 < 4).
-		const int32 CX = 4 + (int32)(VoxelChunkHash(Coord, 0xDEADBEEFu) % 8);
-		const int32 CY = 4 + (int32)(VoxelChunkHash(Coord, 0xCAFEBABEu) % 8);
-
-		const int32 SurfZ = FindSurfaceZ(InOutBlocks, CX, CY);
-		if (SurfZ < 0) return;  // no solid surface found (shouldn't happen in practice)
-
-		// Base radius in [1.5, 2.5] → diameter 3–5 blocks.
-		const float BaseRadius = 1.5f + (float)(VoxelChunkHash(Coord, 0x12345678u) % 101) * 0.01f;
-
-		// Independent per-axis scale factors (0.80–1.20) produce an irregular ellipsoid.
-		const float ScaleX = 0.80f + (float)(VoxelChunkHash(Coord, 0xAABBCCDDu) % 41) * 0.01f;
-		const float ScaleY = 0.80f + (float)(VoxelChunkHash(Coord, 0x11223344u) % 41) * 0.01f;
-		const float ScaleZ = 0.70f + (float)(VoxelChunkHash(Coord, 0x55667788u) % 41) * 0.01f;
-
-		// Vertical centre: embed 30% of the radius into the ground so it looks
-		// like it's resting on the surface rather than hovering above it.
-		const float CZ = (float)SurfZ + BaseRadius * 0.70f;
-
-		const int32 IRadius = FMath::CeilToInt(BaseRadius) + 1;
-
-		for (int32 dz = -IRadius; dz <= IRadius; ++dz)
-		{
-			for (int32 dy = -IRadius; dy <= IRadius; ++dy)
-			{
-				for (int32 dx = -IRadius; dx <= IRadius; ++dx)
-				{
-					// Normalised ellipsoid distance.
-					const float nx = (float)dx / (BaseRadius * ScaleX);
-					const float ny = (float)dy / (BaseRadius * ScaleY);
-					const float nz = (float)dz / (BaseRadius * ScaleZ);
-
-					// Per-voxel surface perturbation (±10% of normalised radius)
-					// gives a rough, chipped-rock silhouette.
-					const uint32 PH = VoxelChunkHash(
-						FIntVector(CX + dx, CY + dy, SurfZ + dz), 0x99887766u);
-					const float Perturb = (float)(PH % 21) * 0.01f - 0.10f;  // -0.10 .. +0.10
-
-					if ((nx*nx + ny*ny + nz*nz) <= (1.0f + Perturb))
-					{
-						PlaceBlockInArray(InOutBlocks,
-							CX + dx,
-							CY + dy,
-							FMath::RoundToInt(CZ) + dz,
-							EBlockType::Stone);
-					}
-				}
-			}
-		}
-	}
-}
+// (GenerateChunkData removed — routing is now handled by FWorldGenerationManager::RouteChunkGeneration)
