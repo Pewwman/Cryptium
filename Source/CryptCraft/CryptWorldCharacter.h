@@ -129,4 +129,7 @@ private:
 
 	/** Internal helper to change hotbar slot. */
 	void SelectHotbarSlot(int32 SlotIndex);
+
+	/** Trigger ship detection from a control block position. */
+	void TriggerShipDetection(FIntVector ControlBlockCoord);
 };
