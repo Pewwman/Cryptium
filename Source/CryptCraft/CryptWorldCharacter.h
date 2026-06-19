@@ -105,6 +105,9 @@ private:
 	/** Fire a ray from the camera. Returns true and fills OutHit on success. */
 	bool TraceBlock(FHitResult& OutHit) const;
 
+	/** Get the block type from the active hotbar slot's ItemID. Returns Air if slot is empty or item is not a block. */
+	EBlockType GetBlockTypeFromHotbar();
+
 	/** Left-click: remove the targeted block. */
 	UFUNCTION() void BreakBlock();
 

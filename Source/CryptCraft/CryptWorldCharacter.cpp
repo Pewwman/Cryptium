@@ -291,6 +291,32 @@ bool ACryptWorldCharacter::TraceBlock(FHitResult& OutHit) const
 	return GetWorld()->LineTraceSingleByChannel(OutHit, Start, End, ECC_Visibility, Params);
 }
 
+EBlockType ACryptWorldCharacter::GetBlockTypeFromHotbar()
+{
+	if (!InventoryComponent)
+	{
+		return EBlockType::Air;
+	}
+
+	FInventorySlot ActiveSlot = InventoryComponent->GetActiveHotbarSlot();
+	if (ActiveSlot.IsEmpty())
+	{
+		return EBlockType::Air;
+	}
+
+	// Find the block type that corresponds to the ItemID
+	for (const auto& Pair : BlockTypeToItemID)
+	{
+		if (Pair.Value == ActiveSlot.ItemID)
+		{
+			return Pair.Key;
+		}
+	}
+
+	// Item is not a placeable block
+	return EBlockType::Air;
+}
+
 void ACryptWorldCharacter::BreakBlock()
 {
 	if (!VoxelWorld) return;
@@ -473,34 +499,11 @@ void ACryptWorldCharacter::PlaceBlock()
 			UE_LOG(LogTemp, Log, TEXT("[PlaceBlock] Clicked on ship block at local coord %d,%d,%d - attempting to place block"), 
 				LocalBlockCoord.X, LocalBlockCoord.Y, LocalBlockCoord.Z);
 
-			// Get the active hotbar slot
-			if (!InventoryComponent)
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[PlaceBlock] No inventory component"));
-				return;
-			}
-
-			FInventorySlot ActiveSlot = InventoryComponent->GetActiveHotbarSlot();
-			if (ActiveSlot.IsEmpty())
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[PlaceBlock] No block in active hotbar slot"));
-				return;
-			}
-
-			// Find the block type that corresponds to the ItemID in the hotbar
-			EBlockType BlockToPlace = EBlockType::Air;
-			for (const auto& Pair : BlockTypeToItemID)
-			{
-				if (Pair.Value == ActiveSlot.ItemID)
-				{
-					BlockToPlace = Pair.Key;
-					break;
-				}
-			}
-
+			// Get block type from active hotbar slot
+			EBlockType BlockToPlace = GetBlockTypeFromHotbar();
 			if (BlockToPlace == EBlockType::Air)
 			{
-				UE_LOG(LogTemp, Warning, TEXT("[PlaceBlock] ItemID '%s' is not a placeable block"), *ActiveSlot.ItemID.ToString());
+				UE_LOG(LogTemp, Warning, TEXT("[PlaceBlock] Active hotbar slot is empty or not a placeable block"));
 				return;
 			}
 
@@ -543,29 +546,11 @@ void ACryptWorldCharacter::PlaceBlock()
 	}
 
 	// Normal block placement logic
-	// Get the active hotbar slot
-	if (!InventoryComponent) return;
-	FInventorySlot ActiveSlot = InventoryComponent->GetActiveHotbarSlot();
-	if (ActiveSlot.IsEmpty())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PlaceBlock] Active hotbar slot is empty"));
-		return;
-	}
-
-	// Find the block type that corresponds to the ItemID
-	EBlockType BlockToPlace = EBlockType::Air;
-	for (const auto& Pair : BlockTypeToItemID)
-	{
-		if (Pair.Value == ActiveSlot.ItemID)
-		{
-			BlockToPlace = Pair.Key;
-			break;
-		}
-	}
-
+	// Get block type from active hotbar slot
+	EBlockType BlockToPlace = GetBlockTypeFromHotbar();
 	if (BlockToPlace == EBlockType::Air)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PlaceBlock] ItemID '%s' is not a placeable block"), *ActiveSlot.ItemID.ToString());
+		UE_LOG(LogTemp, Warning, TEXT("[PlaceBlock] Active hotbar slot is empty or not a placeable block"));
 		return;
 	}
 
@@ -602,14 +587,18 @@ void ACryptWorldCharacter::PlaceBlock()
 	// Place the block in the voxel grid
 	VoxelWorld->SetBlockAt(WorldVoxel, BlockToPlace);
 
-	// Remove one from inventory
-	if (InventoryComponent->RemoveItem(ActiveSlot.ItemID, 1))
+	// Remove one from inventory (get fresh slot reference for ItemID)
+	if (InventoryComponent)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[PlaceBlock] Placed %s, removed from inventory"), *ActiveSlot.ItemID.ToString());
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PlaceBlock] Failed to remove item from inventory: %s"), *ActiveSlot.ItemID.ToString());
+		FInventorySlot ActiveSlot = InventoryComponent->GetActiveHotbarSlot();
+		if (InventoryComponent->RemoveItem(ActiveSlot.ItemID, 1))
+		{
+			UE_LOG(LogTemp, Log, TEXT("[PlaceBlock] Placed %s, removed from inventory"), *ActiveSlot.ItemID.ToString());
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[PlaceBlock] Failed to remove item from inventory: %s"), *ActiveSlot.ItemID.ToString());
+		}
 	}
 }
 
