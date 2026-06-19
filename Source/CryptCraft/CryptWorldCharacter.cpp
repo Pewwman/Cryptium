@@ -68,6 +68,8 @@ ACryptWorldCharacter::ACryptWorldCharacter()
 	BlockTypeToItemID.Add(EBlockType::Stone,   FName(TEXT("stone")));
 	BlockTypeToItemID.Add(EBlockType::Sand,    FName(TEXT("sand")));
 	BlockTypeToItemID.Add(EBlockType::Gravel,  FName(TEXT("gravel")));
+	BlockTypeToItemID.Add(EBlockType::Water,   FName(TEXT("water")));
+	BlockTypeToItemID.Add(EBlockType::Lava,    FName(TEXT("lava")));
 	BlockTypeToItemID.Add(EBlockType::OakLog,  FName(TEXT("oak_log")));
 	BlockTypeToItemID.Add(EBlockType::OakLeaves, FName(TEXT("oak_leaves")));
 	BlockTypeToItemID.Add(EBlockType::OakPlanks, FName(TEXT("oak_planks")));
@@ -178,6 +180,8 @@ void ACryptWorldCharacter::BeginPlay()
 			ItemDefinitions.Add(TEXT("stone"), TPair<FText, FString>(FText::FromString(TEXT("Stone")), TEXT("/Game/Textures/Blocks/stone")));
 			ItemDefinitions.Add(TEXT("sand"), TPair<FText, FString>(FText::FromString(TEXT("Sand")), TEXT("/Game/Textures/Blocks/sand")));
 			ItemDefinitions.Add(TEXT("gravel"), TPair<FText, FString>(FText::FromString(TEXT("Gravel")), TEXT("/Game/Textures/Blocks/gravel")));
+			ItemDefinitions.Add(TEXT("water"), TPair<FText, FString>(FText::FromString(TEXT("Water")), TEXT("/Game/Textures/Blocks/water")));
+			ItemDefinitions.Add(TEXT("lava"), TPair<FText, FString>(FText::FromString(TEXT("Lava")), TEXT("/Game/Textures/Blocks/lava")));
 			ItemDefinitions.Add(TEXT("oak_log"), TPair<FText, FString>(FText::FromString(TEXT("Oak Log")), TEXT("/Game/Textures/Blocks/oaklog_side")));
 			ItemDefinitions.Add(TEXT("oak_leaves"), TPair<FText, FString>(FText::FromString(TEXT("Oak Leaves")), TEXT("/Game/Textures/Blocks/grass_top")));
 			ItemDefinitions.Add(TEXT("oak_planks"), TPair<FText, FString>(FText::FromString(TEXT("Oak Planks")), TEXT("/Game/Textures/Blocks/oakplanks")));
