@@ -1,0 +1,55 @@
+[1mdiff --git a/Source/CryptCraft/Voxel/Chunk.cpp b/Source/CryptCraft/Voxel/Chunk.cpp[m
+[1mindex 6f3d78e..455a45a 100644[m
+[1m--- a/Source/CryptCraft/Voxel/Chunk.cpp[m
+[1m+++ b/Source/CryptCraft/Voxel/Chunk.cpp[m
+[36m@@ -202,25 +202,40 @@[m [mvoid AChunk::BuildGreedyMesh([m
+ 					PosA[d] = s;     PosA[u] = i; PosA[v] = j;[m
+ 					PosB[d] = s + 1; PosB[u] = i; PosB[v] = j;[m
+ [m
+[32m+[m					[32mconst EBlockType BlockA = GetBlockWithNeighbors(PosA[0], PosA[1], PosA[2]);[m
+[32m+[m					[32mconst EBlockType BlockB = GetBlockWithNeighbors(PosB[0], PosB[1], PosB[2]);[m
+ 					const bool bAOpaque = IsBlockOpaque(PosA[0], PosA[1], PosA[2]);[m
+ 					const bool bBOpaque = IsBlockOpaque(PosB[0], PosB[1], PosB[2]);[m
+[32m+[m					[32mconst bool bAVisible = (BlockA != EBlockType::Air);[m
+[32m+[m					[32mconst bool bBVisible = (BlockB != EBlockType::Air);[m
+ [m
+[31m-					if (bAOpaque == bBOpaque)[m
+[32m+[m					[32m// A face is needed at this boundary when one side renders (non-Air)[m
+[32m+[m					[32m// and the other side does not occlude it (is Air or non-opaque).[m
+[32m+[m					[32m// This handles opaque/transparent pairs AND non-opaque/Air pairs (e.g. Water surface).[m
+[32m+[m					[32mif (bAOpaque && !bBOpaque)[m
+ 					{[m
+[31m-						// Both solid or both air → no face needed here[m
+[31m-						Mask[i + j * MaskW] = 0;[m
+[32m+[m						[32m// Opaque A, transparent B → face with +d normal, owned by block A[m
+[32m+[m						[32mMask[i + j * MaskW] = static_cast<int32>(BlockA);[m
+[32m+[m					[32m}[m
+[32m+[m					[32melse if (!bAOpaque && bBOpaque)[m
+[32m+[m					[32m{[m
+[32m+[m						[32m// Transparent A, opaque B → face with −d normal, owned by block B[m
+[32m+[m						[32mMask[i + j * MaskW] = -static_cast<int32>(BlockB);[m
+ 					}[m
+[31m-					else if (bAOpaque)[m
+[32m+[m					[32melse if (bAVisible && !bBVisible)[m
+ 					{[m
+[31m-						// Solid A, transparent B → face with +d normal, owned by block A[m
+[31m-						EBlockType BA = GetBlockWithNeighbors(PosA[0], PosA[1], PosA[2]);[m
+[31m-						Mask[i + j * MaskW] = static_cast<int32>(BA);[m
+[32m+[m						[32m// Non-opaque solid A (e.g. Water) against Air B → face with +d normal[m
+[32m+[m						[32mMask[i + j * MaskW] = static_cast<int32>(BlockA);[m
+[32m+[m					[32m}[m
+[32m+[m					[32melse if (!bAVisible && bBVisible)[m
+[32m+[m					[32m{[m
+[32m+[m						[32m// Air A against non-opaque solid B (e.g. Water) → face with −d normal[m
+[32m+[m						[32mMask[i + j * MaskW] = -static_cast<int32>(BlockB);[m
+ 					}[m
+ 					else[m
+ 					{[m
+[31m-						// Transparent A, solid B → face with −d normal, owned by block B[m
+[31m-						EBlockType BB = GetBlockWithNeighbors(PosB[0], PosB[1], PosB[2]);[m
+[31m-						Mask[i + j * MaskW] = -static_cast<int32>(BB);[m
+[32m+[m						[32m// Both opaque, both Air, or both same non-opaque type → no face[m
+[32m+[m						[32mMask[i + j * MaskW] = 0;[m
+ 					}[m
+ 				}[m
+ 			}[m
