@@ -109,6 +109,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Voxel")
 	EBlockType GetBlockAt(FIntVector WorldVoxelPos) const;
 
+	/** Returns the loaded chunk at the given chunk coordinate, or nullptr if not loaded. */
+	AChunk* GetChunkAt(FIntVector ChunkCoord) const;
+
 	/** Sets the block at a world-voxel coordinate and rebuilds affected chunks. */
 	UFUNCTION(BlueprintCallable, Category = "Voxel")
 	void SetBlockAt(FIntVector WorldVoxelPos, EBlockType Type);

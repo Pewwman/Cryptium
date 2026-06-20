@@ -66,8 +66,17 @@ public:
 	bool bUseSyncCollision = false;
 
 private:
-	// Flat voxel storage: index = X + CHUNK_SIZE_X * (Y + CHUNK_SIZE_Y * Z)
+	// Flat voxel storage: index = X + CHUNK_SIZE_X * (Y + CHUNK_SIZE_Y * Z).
+	// Empty when bIsUniform == true.
 	TArray<EBlockType> Blocks;
+
+	// Uniform-chunk optimization: when all 32768 blocks are identical,
+	// Blocks is freed and UniformBlockType holds the single value.
+	bool       bIsUniform       = false;
+	EBlockType UniformBlockType = EBlockType::Air;
+
+	/** Expand Blocks back to a full per-block array before the first write to a uniform chunk. */
+	void DeUniformify();
 
 	UPROPERTY(VisibleAnywhere, Category = "Voxel")
 	TObjectPtr<UProceduralMeshComponent> ProceduralMesh;

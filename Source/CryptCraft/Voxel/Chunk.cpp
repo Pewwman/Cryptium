@@ -32,6 +32,8 @@ bool AChunk::BlockIndex(int32 X, int32 Y, int32 Z, int32& OutIndex)
 
 EBlockType AChunk::GetBlock(int32 X, int32 Y, int32 Z) const
 {
+	// Also guards the live-coding re-instancing case: bIsUniform==false but Blocks is empty.
+	if (bIsUniform || Blocks.Num() == 0) return UniformBlockType;
 	int32 Idx;
 	if (!BlockIndex(X, Y, Z, Idx)) return EBlockType::Air;
 	return Blocks[Idx];
@@ -41,6 +43,7 @@ void AChunk::SetBlock(int32 X, int32 Y, int32 Z, EBlockType Type, bool bRebuildM
 {
 	int32 Idx;
 	if (!BlockIndex(X, Y, Z, Idx)) return;
+	if (bIsUniform || Blocks.Num() == 0) DeUniformify();
 	Blocks[Idx] = Type;
 	if (bRebuildMesh) RebuildMesh();
 }
@@ -53,11 +56,56 @@ void AChunk::Initialize(const TArray<EBlockType>& InBlocks)
 {
 	check(InBlocks.Num() == CHUNK_SIZE_X * CHUNK_SIZE_Y * CHUNK_SIZE_Z);
 	Blocks = InBlocks;
+
+	// Uniform detection — O(32768), runs once at generation time.
+	const EBlockType First = Blocks[0];
+	bIsUniform = true;
+	for (const EBlockType B : Blocks)
+	{
+		if (B != First) { bIsUniform = false; break; }
+	}
+	if (bIsUniform)
+	{
+		UniformBlockType = First;
+		Blocks.Empty();
+	}
+
 	RebuildMesh();
+}
+
+void AChunk::DeUniformify()
+{
+	// Works both for genuinely uniform chunks and for re-instanced chunks with empty Blocks.
+	Blocks.Init(UniformBlockType, CHUNK_SIZE_X * CHUNK_SIZE_Y * CHUNK_SIZE_Z);
+	bIsUniform = false;
 }
 
 void AChunk::RebuildMesh()
 {
+	// Skip meshing if this chunk and all 6 face-neighbors are uniform with the same
+	// block type — every face boundary would be culled anyway.
+	if (bIsUniform && VoxelWorld)
+	{
+		static const FIntVector Dirs[6] = {
+			{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}
+		};
+		bool bAllSame = true;
+		for (const FIntVector& D : Dirs)
+		{
+			AChunk* N = VoxelWorld->GetChunkAt(ChunkCoord + D);
+			if (!N || !N->bIsUniform || N->UniformBlockType != UniformBlockType)
+			{
+				bAllSame = false;
+				break;
+			}
+		}
+		if (bAllSame)
+		{
+			ProceduralMesh->ClearAllMeshSections();
+			return;
+		}
+	}
+
 	TArray<FVector>       Vertices;
 	TArray<int32>         Triangles;
 	TArray<FVector>       Normals;

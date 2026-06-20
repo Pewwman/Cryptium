@@ -241,6 +241,12 @@ EBlockType AVoxelWorld::GetBlockAt(FIntVector WorldVoxelPos) const
 	return (*Found)->GetBlock(LV.X, LV.Y, LV.Z);
 }
 
+AChunk* AVoxelWorld::GetChunkAt(FIntVector ChunkCoord) const
+{
+	const TObjectPtr<AChunk>* Found = LoadedChunks.Find(ChunkCoord);
+	return (Found && *Found) ? Found->Get() : nullptr;
+}
+
 void AVoxelWorld::SetBlockAt(FIntVector WorldVoxelPos, EBlockType Type)
 {
 	FIntVector CC = WorldVoxelToChunkCoord(WorldVoxelPos);
