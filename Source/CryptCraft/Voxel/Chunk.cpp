@@ -202,25 +202,37 @@ void AChunk::BuildGreedyMesh(
 					PosA[d] = s;     PosA[u] = i; PosA[v] = j;
 					PosB[d] = s + 1; PosB[u] = i; PosB[v] = j;
 
-					const bool bAOpaque = IsBlockOpaque(PosA[0], PosA[1], PosA[2]);
-					const bool bBOpaque = IsBlockOpaque(PosB[0], PosB[1], PosB[2]);
+					const EBlockType BlockA = GetBlockWithNeighbors(PosA[0], PosA[1], PosA[2]);
+					const EBlockType BlockB = GetBlockWithNeighbors(PosB[0], PosB[1], PosB[2]);
+					const bool bAOpaque  = IsBlockOpaque(PosA[0], PosA[1], PosA[2]);
+					const bool bBOpaque  = IsBlockOpaque(PosB[0], PosB[1], PosB[2]);
+					const bool bAVisible = (BlockA != EBlockType::Air);
+					const bool bBVisible = (BlockB != EBlockType::Air);
 
-					if (bAOpaque == bBOpaque)
+					if (bAOpaque && !bBOpaque)
 					{
-						// Both solid or both air → no face needed here
-						Mask[i + j * MaskW] = 0;
+						// Opaque A, non-opaque B → face with +d normal, owned by block A
+						Mask[i + j * MaskW] = static_cast<int32>(BlockA);
 					}
-					else if (bAOpaque)
+					else if (!bAOpaque && bBOpaque)
 					{
-						// Solid A, transparent B → face with +d normal, owned by block A
-						EBlockType BA = GetBlockWithNeighbors(PosA[0], PosA[1], PosA[2]);
-						Mask[i + j * MaskW] = static_cast<int32>(BA);
+						// Non-opaque A, opaque B → face with -d normal, owned by block B
+						Mask[i + j * MaskW] = -static_cast<int32>(BlockB);
+					}
+					else if (bAVisible && !bBVisible)
+					{
+						// Non-opaque solid A (e.g. Water) against Air → face with +d normal
+						Mask[i + j * MaskW] = static_cast<int32>(BlockA);
+					}
+					else if (!bAVisible && bBVisible)
+					{
+						// Air against non-opaque solid B (e.g. Water) → face with -d normal
+						Mask[i + j * MaskW] = -static_cast<int32>(BlockB);
 					}
 					else
 					{
-						// Transparent A, solid B → face with −d normal, owned by block B
-						EBlockType BB = GetBlockWithNeighbors(PosB[0], PosB[1], PosB[2]);
-						Mask[i + j * MaskW] = -static_cast<int32>(BB);
+						// Stone/Stone, Air/Air, Water/Water, etc. → no face
+						Mask[i + j * MaskW] = 0;
 					}
 				}
 			}
