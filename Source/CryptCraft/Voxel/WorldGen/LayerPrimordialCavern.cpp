@@ -242,8 +242,27 @@ void FPrimordialCavernLevelGenerator::GenerateBlocks(
 					}
 					else if (AbsoluteZ == GroundHeight)
 					{
-						// Ground surface: sand near sea level (beach band), grass elsewhere
-						BlockType = (GroundHeight >= 60 && GroundHeight <= 68) ? EBlockType::Sand : EBlockType::Grass;
+						// Ground surface: dry land vs underwater
+						if (GroundHeight > SEA_LEVEL)
+						{
+							// Dry land: beach band (60–68) shows Sand, inland shows Grass
+							BlockType = (GroundHeight >= 60 && GroundHeight <= 68)
+								? EBlockType::Sand
+								: EBlockType::Grass;
+						}
+						else
+						{
+							// Underwater floor: blend Sand → Gravel with depth jitter
+							const float DepthFraction = FMath::Clamp(
+								static_cast<float>(SEA_LEVEL - GroundHeight) / static_cast<float>(SEA_LEVEL - 32),
+								0.f, 1.f);
+							
+							const float JitteredFraction = FMath::Clamp(
+								DepthFraction + DetailNoise * 0.15f,
+								0.f, 1.f);
+							
+							BlockType = (JitteredFraction > 0.5f) ? EBlockType::Gravel : EBlockType::Sand;
+						}
 					}
 					else if (AbsoluteZ <= SEA_LEVEL)
 					{
