@@ -39,7 +39,7 @@ static float SampleContinentNoise(float WX, float WY)
 	static constexpr float NoiseOffset = 50000.5f;
 	float Value = 0.f;
 	float Amp   = 1.f;
-	float Freq  = 1.f / 475.f;
+	float Freq  = 1.f / 3000.f;  // PIECE 1: Enlarged from 1/475 for larger continental scale
 	float Total = 0.f;
 
 	for (int32 Oct = 0; Oct < 3; ++Oct)
@@ -54,25 +54,29 @@ static float SampleContinentNoise(float WX, float WY)
 }
 
 // Spline remap: maps continent noise [-1, 1] to a shaped [0, 1] height fraction.
+// PIECE 2: Ocean side compressed (smaller fraction of input range), land side unchanged.
 // Control points: (input, output)
-//   (-1.0, 0.03) — deep ocean abyss
-//   (-0.4, 0.08) — shallow ocean
-//   (-0.15, 0.45) — continental shelf
-//   ( 0.0,  0.50) — coastline / sea level
-//   ( 0.20, 0.52) — low coastal plain
-//   ( 0.35, 0.55) — end of plains / foothills start
-//   ( 0.50, 0.68) — foothills
-//   ( 0.70, 0.88) — mid hills
-//   ( 1.0,  1.00) — mountain peaks
+//   (-1.0, 0.02)  — deep ocean abyss (unchanged)
+//   (-0.65, 0.04) — shallow ocean (MOVED: was -0.40)
+//   (-0.40, 0.15) — mid ocean (MOVED: was -0.20)
+//   (-0.20, 0.35) — deep shelf (MOVED: was -0.10)
+//   (-0.05, 0.48) — upper shelf (MOVED: was -0.03)
+//   ( 0.0,  0.50) — coastline (unchanged)
+//   ( 0.03, 0.52) — coastal plain (unchanged)
+//   ( 0.12, 0.60) — plains (unchanged)
+//   ( 0.30, 0.72) — foothills (unchanged)
+//   ( 0.50, 0.85) — mid hills (unchanged)
+//   ( 0.75, 0.95) — high hills (unchanged)
+//   ( 1.0,  1.00) — mountain peaks (unchanged)
 static float RemapShapeCurve(float t)
 {
 	struct FControlPoint { float In; float Out; };
 	static constexpr FControlPoint Points[] = {
 		{ -1.00f, 0.02f },
-		{ -0.40f, 0.04f },
-		{ -0.20f, 0.15f },
-		{ -0.10f, 0.35f },
-		{ -0.03f, 0.48f },
+		{ -0.65f, 0.04f },  // Compressed ocean range
+		{ -0.40f, 0.15f },
+		{ -0.20f, 0.35f },
+		{ -0.05f, 0.48f },
 		{  0.00f, 0.50f },
 		{  0.03f, 0.52f },
 		{  0.12f, 0.60f },
@@ -118,6 +122,36 @@ static float SampleDetailNoise(float WX, float WY)
 	}
 
 	return Value / Total;  // [-1, 1]
+}
+
+// PIECE 3: High-frequency noise for breaking up coastline with organic detail
+static float SampleCoastJitter(float WX, float WY)
+{
+	static constexpr float NoiseOffset = 60000.5f;
+	float Value = 0.f;
+	float Amp   = 1.f;
+	float Freq  = 1.f / 40.f;  // High frequency for fine coastal variation
+	float Total = 0.f;
+
+	for (int32 Oct = 0; Oct < 2; ++Oct)
+	{
+		Value += CavePerlin2D((WX + NoiseOffset) * Freq, (WY + NoiseOffset) * Freq) * Amp;
+		Total += Amp;
+		Amp  *= 0.5f;
+		Freq *= 2.f;
+	}
+
+	return Value / Total;  // [-1, 1]
+}
+
+// PIECE 4: Low-frequency noise for sparse island clusters in deep ocean
+static float SampleIslandMask(float WX, float WY)
+{
+	static constexpr float NoiseOffset = 80000.5f;
+	static constexpr float Freq = 1.f / 200.f;  // Low frequency for large island clusters
+	
+	float Value = CavePerlin2D((WX + NoiseOffset) * Freq, (WY + NoiseOffset) * Freq);
+	return Value;  // [-1, 1]
 }
 
 
@@ -193,7 +227,19 @@ void FPrimordialCavernLevelGenerator::GenerateBlocks(
 				const float ContinentNoise = SampleContinentNoise(WX, WY);
 
 			// 2. Remap through spline control points to get base height fraction
-			const float ShapeValue = RemapShapeCurve(ContinentNoise);
+			float ShapeValue = RemapShapeCurve(ContinentNoise);
+
+			// 2.5 PIECE 3: Apply coast jitter — breaks up coastline with organic detail
+			//     Fades in near the threshold, fades out as you move well into land or ocean
+			if (ShapeValue > 0.42f && ShapeValue < 0.58f)  // ±0.08 from 0.50 (coastline)
+			{
+				const float CoastDistance = FMath::Abs(ShapeValue - 0.50f) / 0.08f;  // [0, 1]: 0=at coast, 1=far from coast
+				const float JitterFade = 1.0f - (CoastDistance * CoastDistance);  // Fade^2 for smooth cutoff
+				const float CoastJitter = SampleCoastJitter(WX, WY);  // [-1, 1]
+				
+				ShapeValue += CoastJitter * 0.12f * JitterFade;  // Jitter amplitude: 0.12, faded by zone proximity
+				ShapeValue = FMath::Clamp(ShapeValue, 0.0f, 1.0f);
+			}
 
 			// 3. Detail amplitude varies by terrain zone with smooth interpolation:
 			//    deep ocean / flat plains = low ripple, hills = more roughness
@@ -216,8 +262,26 @@ void FPrimordialCavernLevelGenerator::GenerateBlocks(
 			float FinalShape = FMath::Clamp(ShapeValue + DetailContribution, 0.f, 1.f);
 
 			// 5. Map [0, 1] → world height [32, 95]
-			// Original simple formula without mountains
-			const int32 GroundHeight = FMath::Clamp(32 + FMath::RoundToInt(FinalShape * 63.f), 32, 95);
+			int32 GroundHeight = FMath::Clamp(32 + FMath::RoundToInt(FinalShape * 63.f), 32, 95);
+
+			// 6. PIECE 4: Apply island bump in deep ocean only — adds 5–12 blocks to rare island peaks
+			//    Islands are sparse and isolated, gated to ShapeValue < 0.35 (deep ocean)
+			if (ShapeValue < 0.35f)
+			{
+				const float IslandMask = SampleIslandMask(WX, WY);  // [-1, 1]
+				
+				// High threshold (0.70) ensures islands are rare and clustered
+				if (IslandMask > 0.70f)
+				{
+					// Normalize mask intensity to [0, 1], then scale to bump height [0, 12]
+					const float IslandIntensity = FMath::Clamp((IslandMask - 0.70f) / 0.30f, 0.0f, 1.0f);
+					const int32 IslandBump = FMath::RoundToInt(IslandIntensity * 12.0f);  // CORRECTED: 12.0 (was 8.0)
+					
+					GroundHeight += IslandBump;
+					GroundHeight = FMath::Clamp(GroundHeight, 32, 95);  // Safety clamp
+				}
+			}
+
 			const int32 SEA_LEVEL = 64;
 			
 			// Calculate which block this column is in (LocalChunkZ 7 = 0-31, LocalChunkZ 6 = 32-63, LocalChunkZ 5 = 64-95, LocalChunkZ 4 = 96-127)
@@ -289,8 +353,8 @@ void FPrimordialCavernLevelGenerator::GenerateBlocks(
 		return;
 	}
 
-	// Fallback (shouldn't happen)
-	OutBlocks.Init(EBlockType::Stone, CHUNK_SIZE_X * CHUNK_SIZE_Y * CHUNK_SIZE_Z);
+	// Fallback (shouldn't happen): fill with air as safe default
+	OutBlocks.Init(EBlockType::Air, CHUNK_SIZE_X * CHUNK_SIZE_Y * CHUNK_SIZE_Z);
 }
 
 void FPrimordialCavernLevelGenerator::GenerateChunk(
