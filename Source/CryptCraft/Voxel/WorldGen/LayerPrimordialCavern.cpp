@@ -287,7 +287,8 @@ static float SampleBiomeJitterNoise(float WX, float WY)
 static EPrimordialBiomeType DetermineLandBiome(float ShapeValue, float VegetationDensity, float WX, float WY)
 {
 	// Mountains require BOTH high elevation AND presence in an actual mountain range footprint
-	if (ShapeValue >= 0.78f && SampleMountainMask(WX, WY) > 0.9f)
+	// Data-driven from grid scan: ShapeValue >= 0.70 + MountainMask > 0.80 gives ~300-block footprints, 14.5 ranges/continent
+	if (ShapeValue >= 0.70f && SampleMountainMask(WX, WY) > 0.80f)
 	{
 		return EPrimordialBiomeType::PrimordialMountains;
 	}
@@ -471,18 +472,24 @@ void FPrimordialCavernLevelGenerator::GridScanForPeaks(float CenterBlockX, float
 	int32 LandSamples = 0;
 	int32 MountainSamples = 0;
 	
-	// Track ShapeValue bands and MountainMask pass rates
-	int32 Band_060_065 = 0, Band_060_065_Pass = 0;  // [0.60, 0.65)
-	int32 Band_065_070 = 0, Band_065_070_Pass = 0;  // [0.65, 0.70)
-	int32 Band_070_075 = 0, Band_070_075_Pass = 0;  // [0.70, 0.75)
-	int32 Band_075_078 = 0, Band_075_078_Pass = 0;  // [0.75, 0.78)
-	int32 Band_078_Plus = 0, Band_078_Plus_Pass = 0; // [0.78, +∞)
-	int32 Band_060_Plus = 0, Band_060_Plus_Pass = 0; // [0.60, +∞) aggregate
+	// Track combination frequencies for final thresholds and footprint measurement
+	int32 Combo_070_Plus_090 = 0, Combo_070_Plus_095 = 0; // ShapeValue >= 0.70 overall
+	int32 Combo_070_Plus_080 = 0; // ShapeValue >= 0.70 AND MountainMask > 0.80 (final choice)
 	
-	// Track MountainMask candidate thresholds for ShapeValue >= 0.78 samples
-	int32 Band_078_Total = 0;
-	int32 Threshold_050 = 0, Threshold_060 = 0, Threshold_070 = 0, Threshold_075 = 0;
-	int32 Threshold_080 = 0, Threshold_085 = 0, Threshold_090 = 0;
+	// Track a qualifying location for footprint measurement (ShapeValue >= 0.70 AND MountainMask > 0.95)
+	float FootprintTestBlockX_095 = 0.f;
+	float FootprintTestBlockY_095 = 0.f;
+	bool bFoundFootprintTestLocation_095 = false;
+	
+	// Track a qualifying location for footprint measurement (ShapeValue >= 0.70 AND MountainMask > 0.90)
+	float FootprintTestBlockX_090 = 0.f;
+	float FootprintTestBlockY_090 = 0.f;
+	bool bFoundFootprintTestLocation_090 = false;
+	
+	// Track 3 qualifying locations for footprint measurement (ShapeValue >= 0.70 AND MountainMask > 0.80)
+	float FootprintTestBlockX_080[3] = { 0.f, 0.f, 0.f };
+	float FootprintTestBlockY_080[3] = { 0.f, 0.f, 0.f };
+	int32 FoundFootprintTestLocations_080 = 0;
 	
 	// Grid scan across area
 	for (float ScanX = CenterBlockX - HalfSize; ScanX <= CenterBlockX + HalfSize; ScanX += StepBlocks)
@@ -503,54 +510,43 @@ void FPrimordialCavernLevelGenerator::GridScanForPeaks(float CenterBlockX, float
 					MountainSamples++;
 				}
 			}
-			
-			// Track ShapeValue bands and MountainMask pass rates
-			if (DebugInfo.ShapeValue >= 0.60f)
+			if (DebugInfo.ShapeValue >= 0.70f)
 			{
-				Band_060_Plus++;
-				
-				// Use direct MountainMask sample to get accurate threshold distribution
-				if (DirectMountainMask > 0.9f)
+				if (DirectMountainMask > 0.90f) 
 				{
-					Band_060_Plus_Pass++;
-				}
-				
-				// Categorize into sub-bands
-				if (DebugInfo.ShapeValue < 0.65f)
-				{
-					Band_060_065++;
-					if (DirectMountainMask > 0.9f) Band_060_065_Pass++;
-				}
-				else if (DebugInfo.ShapeValue < 0.70f)
-				{
-					Band_065_070++;
-					if (DirectMountainMask > 0.9f) Band_065_070_Pass++;
-				}
-				else if (DebugInfo.ShapeValue < 0.75f)
-				{
-					Band_070_075++;
-					if (DirectMountainMask > 0.9f) Band_070_075_Pass++;
-				}
-				else if (DebugInfo.ShapeValue < 0.78f)
-				{
-					Band_075_078++;
-					if (DirectMountainMask > 0.9f) Band_075_078_Pass++;
-				}
-				else
-				{
-					Band_078_Plus++;
-					if (DirectMountainMask > 0.9f) Band_078_Plus_Pass++;
+					Combo_070_Plus_090++;
 					
-					// Track candidate thresholds for ShapeValue >= 0.78 samples
-					// Using direct MountainMask sample, not biome-conditional DebugInfo.MountainMask
-					Band_078_Total++;
-					if (DirectMountainMask > 0.50f) Threshold_050++;
-					if (DirectMountainMask > 0.60f) Threshold_060++;
-					if (DirectMountainMask > 0.70f) Threshold_070++;
-					if (DirectMountainMask > 0.75f) Threshold_075++;
-					if (DirectMountainMask > 0.80f) Threshold_080++;
-					if (DirectMountainMask > 0.85f) Threshold_085++;
-					if (DirectMountainMask > 0.90f) Threshold_090++;
+					// Capture first qualifying location for footprint measurement (0.90 threshold)
+					if (!bFoundFootprintTestLocation_090)
+					{
+						FootprintTestBlockX_090 = ScanX;
+						FootprintTestBlockY_090 = ScanY;
+						bFoundFootprintTestLocation_090 = true;
+					}
+				}
+				if (DirectMountainMask > 0.95f) 
+				{
+					Combo_070_Plus_095++;
+					
+					// Capture first qualifying location for footprint measurement (0.95 threshold)
+					if (!bFoundFootprintTestLocation_095)
+					{
+						FootprintTestBlockX_095 = ScanX;
+						FootprintTestBlockY_095 = ScanY;
+						bFoundFootprintTestLocation_095 = true;
+					}
+				}
+				if (DirectMountainMask > 0.80f)
+				{
+					Combo_070_Plus_080++;
+					
+					// Capture up to 3 qualifying locations for footprint measurement (0.80 threshold)
+					if (FoundFootprintTestLocations_080 < 3)
+					{
+						FootprintTestBlockX_080[FoundFootprintTestLocations_080] = ScanX;
+						FootprintTestBlockY_080[FoundFootprintTestLocations_080] = ScanY;
+						FoundFootprintTestLocations_080++;
+					}
 				}
 			}
 			
@@ -571,38 +567,341 @@ void FPrimordialCavernLevelGenerator::GridScanForPeaks(float CenterBlockX, float
 	UE_LOG(LogTemp, Warning, TEXT("  Samples analyzed: %d"), SamplesAnalyzed);
 	UE_LOG(LogTemp, Warning, TEXT("  Land samples: %d (%.1f%%)"), LandSamples, (LandSamples * 100.f / SamplesAnalyzed));
 	UE_LOG(LogTemp, Warning, TEXT("  Mountain samples: %d (%.1f%%)"), MountainSamples, (MountainSamples * 100.f / SamplesAnalyzed));
+	
+	// Calculate continent scale factor for estimates
+	// Grid scan area = 60,000 x 60,000 blocks, Step = 200 blocks = 300x300 grid = 90,601 samples
+	// Continent = 9,000 x 9,000 blocks = 81M blocks². Scale: 81M / 3.6B = 0.0225
+	float ContinentScaleFactor = 81000000.f / (GridSizeBlocks * GridSizeBlocks);
 	UE_LOG(LogTemp, Warning, TEXT(""));
-	UE_LOG(LogTemp, Warning, TEXT("SHAPEVALUE BAND BREAKDOWN (MountainMask > 0.9 pass rates):"));
-	UE_LOG(LogTemp, Warning, TEXT("  [0.60, 0.65): %d samples, %d pass (%.1f%%)"), 
-		Band_060_065, Band_060_065_Pass, (Band_060_065 > 0 ? Band_060_065_Pass * 100.f / Band_060_065 : 0.f));
-	UE_LOG(LogTemp, Warning, TEXT("  [0.65, 0.70): %d samples, %d pass (%.1f%%)"), 
-		Band_065_070, Band_065_070_Pass, (Band_065_070 > 0 ? Band_065_070_Pass * 100.f / Band_065_070 : 0.f));
-	UE_LOG(LogTemp, Warning, TEXT("  [0.70, 0.75): %d samples, %d pass (%.1f%%)"), 
-		Band_070_075, Band_070_075_Pass, (Band_070_075 > 0 ? Band_070_075_Pass * 100.f / Band_070_075 : 0.f));
-	UE_LOG(LogTemp, Warning, TEXT("  [0.75, 0.78): %d samples, %d pass (%.1f%%)"), 
-		Band_075_078, Band_075_078_Pass, (Band_075_078 > 0 ? Band_075_078_Pass * 100.f / Band_075_078 : 0.f));
-	UE_LOG(LogTemp, Warning, TEXT("  [0.78, +∞):  %d samples, %d pass (%.1f%%)"), 
-		Band_078_Plus, Band_078_Plus_Pass, (Band_078_Plus > 0 ? Band_078_Plus_Pass * 100.f / Band_078_Plus : 0.f));
-	UE_LOG(LogTemp, Warning, TEXT("  ─────────────────────────────────────────────────────────"));
-	UE_LOG(LogTemp, Warning, TEXT("  [0.60, +∞):  %d samples, %d pass (%.1f%% overall)"), 
-		Band_060_Plus, Band_060_Plus_Pass, (Band_060_Plus > 0 ? Band_060_Plus_Pass * 100.f / Band_060_Plus : 0.f));
-	UE_LOG(LogTemp, Warning, TEXT(""));
-	UE_LOG(LogTemp, Warning, TEXT("MOUNTAINMASK THRESHOLD CANDIDATES (for ShapeValue >= 0.78 only):"));
-	UE_LOG(LogTemp, Warning, TEXT("  Total [0.78, +∞) samples: %d"), Band_078_Total);
-	UE_LOG(LogTemp, Warning, TEXT("  MountainMask > 0.50: %d pass (%.1f%%)"), 
-		Threshold_050, (Band_078_Total > 0 ? Threshold_050 * 100.f / Band_078_Total : 0.f));
-	UE_LOG(LogTemp, Warning, TEXT("  MountainMask > 0.60: %d pass (%.1f%%)"), 
-		Threshold_060, (Band_078_Total > 0 ? Threshold_060 * 100.f / Band_078_Total : 0.f));
-	UE_LOG(LogTemp, Warning, TEXT("  MountainMask > 0.70: %d pass (%.1f%%)"), 
-		Threshold_070, (Band_078_Total > 0 ? Threshold_070 * 100.f / Band_078_Total : 0.f));
-	UE_LOG(LogTemp, Warning, TEXT("  MountainMask > 0.75: %d pass (%.1f%%)"), 
-		Threshold_075, (Band_078_Total > 0 ? Threshold_075 * 100.f / Band_078_Total : 0.f));
-	UE_LOG(LogTemp, Warning, TEXT("  MountainMask > 0.80: %d pass (%.1f%%)"), 
-		Threshold_080, (Band_078_Total > 0 ? Threshold_080 * 100.f / Band_078_Total : 0.f));
-	UE_LOG(LogTemp, Warning, TEXT("  MountainMask > 0.85: %d pass (%.1f%%)"), 
-		Threshold_085, (Band_078_Total > 0 ? Threshold_085 * 100.f / Band_078_Total : 0.f));
-	UE_LOG(LogTemp, Warning, TEXT("  MountainMask > 0.90: %d pass (%.1f%%)"), 
-		Threshold_090, (Band_078_Total > 0 ? Threshold_090 * 100.f / Band_078_Total : 0.f));
+	UE_LOG(LogTemp, Warning, TEXT("FREQUENCY ANALYSIS (Final thresholds with measured footprints):"));
+	UE_LOG(LogTemp, Warning, TEXT("Grid area: %.0f x %.0f blocks, continental scale factor = %.4f"), 
+		GridSizeBlocks, GridSizeBlocks, ContinentScaleFactor);
+	
+	if (Combo_070_Plus_090 > 0)
+	{
+		float PassRate070_090 = Combo_070_Plus_090 * 100.f / SamplesAnalyzed;
+		float RangesPerContinent070_090 = Combo_070_Plus_090 * ContinentScaleFactor;
+		UE_LOG(LogTemp, Warning, TEXT("  [ShapeValue >= 0.70 AND MountainMask > 0.90]: %d samples (%.2f%% pass rate) → %.1f ranges/continent"), 
+			Combo_070_Plus_090, PassRate070_090, RangesPerContinent070_090);
+	}
+	
+	if (Combo_070_Plus_095 > 0)
+	{
+		float PassRate070_095 = Combo_070_Plus_095 * 100.f / SamplesAnalyzed;
+		float RangesPerContinent070_095 = Combo_070_Plus_095 * ContinentScaleFactor;
+		UE_LOG(LogTemp, Warning, TEXT("  [ShapeValue >= 0.70 AND MountainMask > 0.95]: %d samples (%.2f%% pass rate) → %.1f ranges/continent"), 
+			Combo_070_Plus_095, PassRate070_095, RangesPerContinent070_095);
+	}
+	
+	if (Combo_070_Plus_080 > 0)
+	{
+		float PassRate070_080 = Combo_070_Plus_080 * 100.f / SamplesAnalyzed;
+		float RangesPerContinent070_080 = Combo_070_Plus_080 * ContinentScaleFactor;
+		UE_LOG(LogTemp, Warning, TEXT("  [ShapeValue >= 0.70 AND MountainMask > 0.80]: %d samples (%.2f%% pass rate) → %.1f ranges/continent (FINAL CHOICE)"), 
+			Combo_070_Plus_080, PassRate070_080, RangesPerContinent070_080);
+	}
+	
+	// DIRECT FOOTPRINT MEASUREMENT: 1D sweeps from a qualifying location
+	if (Combo_070_Plus_095 > 0 && bFoundFootprintTestLocation_095)
+	{
+		UE_LOG(LogTemp, Warning, TEXT(""));
+		UE_LOG(LogTemp, Warning, TEXT("DIRECT FOOTPRINT MEASUREMENT (1D line sweeps):"));
+		UE_LOG(LogTemp, Warning, TEXT("Testing combo [ShapeValue >= 0.70 AND MountainMask > 0.95] from found location"));
+		UE_LOG(LogTemp, Warning, TEXT("Location: BlockX=%.0f BlockY=%.0f"), FootprintTestBlockX_095, FootprintTestBlockY_095);
+		UE_LOG(LogTemp, Warning, TEXT("Method: Count consecutive samples (50-block step) passing threshold in both directions"));
+		
+		// Sweep X direction (positive)
+		int32 MaxConsecutiveX_Pos = 0, CurrentConsecutiveX_Pos = 0;
+		for (float OffsetX = 50.f; OffsetX <= 2000.f; OffsetX += 50.f)
+		{
+			float TestX = FootprintTestBlockX_095 + OffsetX;
+			float ShapeVal = RemapShapeCurve(SampleContinentNoise(TestX, FootprintTestBlockY_095));
+			float MountainVal = SampleMountainMask(TestX, FootprintTestBlockY_095);
+			
+			if (ShapeVal >= 0.70f && MountainVal > 0.95f)
+			{
+				CurrentConsecutiveX_Pos++;
+				MaxConsecutiveX_Pos = FMath::Max(MaxConsecutiveX_Pos, CurrentConsecutiveX_Pos);
+			}
+			else
+			{
+				CurrentConsecutiveX_Pos = 0;
+			}
+		}
+		
+		// Sweep X direction (negative)
+		int32 MaxConsecutiveX_Neg = 0, CurrentConsecutiveX_Neg = 0;
+		for (float OffsetX = 50.f; OffsetX <= 2000.f; OffsetX += 50.f)
+		{
+			float TestX = FootprintTestBlockX_095 - OffsetX;
+			float ShapeVal = RemapShapeCurve(SampleContinentNoise(TestX, FootprintTestBlockY_095));
+			float MountainVal = SampleMountainMask(TestX, FootprintTestBlockY_095);
+			
+			if (ShapeVal >= 0.70f && MountainVal > 0.95f)
+			{
+				CurrentConsecutiveX_Neg++;
+				MaxConsecutiveX_Neg = FMath::Max(MaxConsecutiveX_Neg, CurrentConsecutiveX_Neg);
+			}
+			else
+			{
+				CurrentConsecutiveX_Neg = 0;
+			}
+		}
+		
+		int32 EstimatedDiameterX = (MaxConsecutiveX_Pos + MaxConsecutiveX_Neg) * 50;
+		
+		// Sweep Y direction (positive)
+		int32 MaxConsecutiveY_Pos = 0, CurrentConsecutiveY_Pos = 0;
+		for (float OffsetY = 50.f; OffsetY <= 2000.f; OffsetY += 50.f)
+		{
+			float TestY = FootprintTestBlockY_095 + OffsetY;
+			float ShapeVal = RemapShapeCurve(SampleContinentNoise(FootprintTestBlockX_095, TestY));
+			float MountainVal = SampleMountainMask(FootprintTestBlockX_095, TestY);
+			
+			if (ShapeVal >= 0.70f && MountainVal > 0.95f)
+			{
+				CurrentConsecutiveY_Pos++;
+				MaxConsecutiveY_Pos = FMath::Max(MaxConsecutiveY_Pos, CurrentConsecutiveY_Pos);
+			}
+			else
+			{
+				CurrentConsecutiveY_Pos = 0;
+			}
+		}
+		
+		// Sweep Y direction (negative)
+		int32 MaxConsecutiveY_Neg = 0, CurrentConsecutiveY_Neg = 0;
+		for (float OffsetY = 50.f; OffsetY <= 2000.f; OffsetY += 50.f)
+		{
+			float TestY = FootprintTestBlockY_095 - OffsetY;
+			float ShapeVal = RemapShapeCurve(SampleContinentNoise(FootprintTestBlockX_095, TestY));
+			float MountainVal = SampleMountainMask(FootprintTestBlockX_095, TestY);
+			
+			if (ShapeVal >= 0.70f && MountainVal > 0.95f)
+			{
+				CurrentConsecutiveY_Neg++;
+				MaxConsecutiveY_Neg = FMath::Max(MaxConsecutiveY_Neg, CurrentConsecutiveY_Neg);
+			}
+			else
+			{
+				CurrentConsecutiveY_Neg = 0;
+			}
+		}
+		
+		int32 EstimatedDiameterY = (MaxConsecutiveY_Pos + MaxConsecutiveY_Neg) * 50;
+		
+		UE_LOG(LogTemp, Warning, TEXT(""));
+		UE_LOG(LogTemp, Warning, TEXT("X-direction: %d samples positive × 50 = %d blocks | %d samples negative × 50 = %d blocks | Total: %d blocks"),
+			MaxConsecutiveX_Pos, MaxConsecutiveX_Pos * 50, MaxConsecutiveX_Neg, MaxConsecutiveX_Neg * 50, EstimatedDiameterX);
+		UE_LOG(LogTemp, Warning, TEXT("Y-direction: %d samples positive × 50 = %d blocks | %d samples negative × 50 = %d blocks | Total: %d blocks"),
+			MaxConsecutiveY_Pos, MaxConsecutiveY_Pos * 50, MaxConsecutiveY_Neg, MaxConsecutiveY_Neg * 50, EstimatedDiameterY);
+		UE_LOG(LogTemp, Warning, TEXT("Average measured range diameter: ~%.0f blocks"),
+			(EstimatedDiameterX + EstimatedDiameterY) / 2.f);
+	}
+	
+	// DIRECT FOOTPRINT MEASUREMENT: 1D sweeps from a qualifying location (0.90 threshold)
+	if (Combo_070_Plus_090 > 0 && bFoundFootprintTestLocation_090)
+	{
+		UE_LOG(LogTemp, Warning, TEXT(""));
+		UE_LOG(LogTemp, Warning, TEXT("DIRECT FOOTPRINT MEASUREMENT (1D line sweeps):"));
+		UE_LOG(LogTemp, Warning, TEXT("Testing combo [ShapeValue >= 0.70 AND MountainMask > 0.90] from found location"));
+		UE_LOG(LogTemp, Warning, TEXT("Location: BlockX=%.0f BlockY=%.0f"), FootprintTestBlockX_090, FootprintTestBlockY_090);
+		UE_LOG(LogTemp, Warning, TEXT("Method: Count consecutive samples (50-block step) passing threshold in both directions"));
+		
+		// Sweep X direction (positive)
+		int32 MaxConsecutiveX_Pos = 0, CurrentConsecutiveX_Pos = 0;
+		for (float OffsetX = 50.f; OffsetX <= 2000.f; OffsetX += 50.f)
+		{
+			float TestX = FootprintTestBlockX_090 + OffsetX;
+			float ShapeVal = RemapShapeCurve(SampleContinentNoise(TestX, FootprintTestBlockY_090));
+			float MountainVal = SampleMountainMask(TestX, FootprintTestBlockY_090);
+			
+			if (ShapeVal >= 0.70f && MountainVal > 0.90f)
+			{
+				CurrentConsecutiveX_Pos++;
+				MaxConsecutiveX_Pos = FMath::Max(MaxConsecutiveX_Pos, CurrentConsecutiveX_Pos);
+			}
+			else
+			{
+				CurrentConsecutiveX_Pos = 0;
+			}
+		}
+		
+		// Sweep X direction (negative)
+		int32 MaxConsecutiveX_Neg = 0, CurrentConsecutiveX_Neg = 0;
+		for (float OffsetX = 50.f; OffsetX <= 2000.f; OffsetX += 50.f)
+		{
+			float TestX = FootprintTestBlockX_090 - OffsetX;
+			float ShapeVal = RemapShapeCurve(SampleContinentNoise(TestX, FootprintTestBlockY_090));
+			float MountainVal = SampleMountainMask(TestX, FootprintTestBlockY_090);
+			
+			if (ShapeVal >= 0.70f && MountainVal > 0.90f)
+			{
+				CurrentConsecutiveX_Neg++;
+				MaxConsecutiveX_Neg = FMath::Max(MaxConsecutiveX_Neg, CurrentConsecutiveX_Neg);
+			}
+			else
+			{
+				CurrentConsecutiveX_Neg = 0;
+			}
+		}
+		
+		int32 EstimatedDiameterX = (MaxConsecutiveX_Pos + MaxConsecutiveX_Neg) * 50;
+		
+		// Sweep Y direction (positive)
+		int32 MaxConsecutiveY_Pos = 0, CurrentConsecutiveY_Pos = 0;
+		for (float OffsetY = 50.f; OffsetY <= 2000.f; OffsetY += 50.f)
+		{
+			float TestY = FootprintTestBlockY_090 + OffsetY;
+			float ShapeVal = RemapShapeCurve(SampleContinentNoise(FootprintTestBlockX_090, TestY));
+			float MountainVal = SampleMountainMask(FootprintTestBlockX_090, TestY);
+			
+			if (ShapeVal >= 0.70f && MountainVal > 0.90f)
+			{
+				CurrentConsecutiveY_Pos++;
+				MaxConsecutiveY_Pos = FMath::Max(MaxConsecutiveY_Pos, CurrentConsecutiveY_Pos);
+			}
+			else
+			{
+				CurrentConsecutiveY_Pos = 0;
+			}
+		}
+		
+		// Sweep Y direction (negative)
+		int32 MaxConsecutiveY_Neg = 0, CurrentConsecutiveY_Neg = 0;
+		for (float OffsetY = 50.f; OffsetY <= 2000.f; OffsetY += 50.f)
+		{
+			float TestY = FootprintTestBlockY_090 - OffsetY;
+			float ShapeVal = RemapShapeCurve(SampleContinentNoise(FootprintTestBlockX_090, TestY));
+			float MountainVal = SampleMountainMask(FootprintTestBlockX_090, TestY);
+			
+			if (ShapeVal >= 0.70f && MountainVal > 0.90f)
+			{
+				CurrentConsecutiveY_Neg++;
+				MaxConsecutiveY_Neg = FMath::Max(MaxConsecutiveY_Neg, CurrentConsecutiveY_Neg);
+			}
+			else
+			{
+				CurrentConsecutiveY_Neg = 0;
+			}
+		}
+		
+		int32 EstimatedDiameterY = (MaxConsecutiveY_Pos + MaxConsecutiveY_Neg) * 50;
+		
+		UE_LOG(LogTemp, Warning, TEXT(""));
+		UE_LOG(LogTemp, Warning, TEXT("X-direction: %d samples positive × 50 = %d blocks | %d samples negative × 50 = %d blocks | Total: %d blocks"),
+			MaxConsecutiveX_Pos, MaxConsecutiveX_Pos * 50, MaxConsecutiveX_Neg, MaxConsecutiveX_Neg * 50, EstimatedDiameterX);
+		UE_LOG(LogTemp, Warning, TEXT("Y-direction: %d samples positive × 50 = %d blocks | %d samples negative × 50 = %d blocks | Total: %d blocks"),
+			MaxConsecutiveY_Pos, MaxConsecutiveY_Pos * 50, MaxConsecutiveY_Neg, MaxConsecutiveY_Neg * 50, EstimatedDiameterY);
+		UE_LOG(LogTemp, Warning, TEXT("Average measured range diameter: ~%.0f blocks"),
+			(EstimatedDiameterX + EstimatedDiameterY) / 2.f);
+	}
+	
+	// DIRECT FOOTPRINT MEASUREMENT: 1D sweeps from 3 qualifying locations (0.80 threshold) - AVERAGED
+	if (Combo_070_Plus_080 > 0 && FoundFootprintTestLocations_080 > 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT(""));
+		UE_LOG(LogTemp, Warning, TEXT("DIRECT FOOTPRINT MEASUREMENT (1D line sweeps, AVERAGED OVER %d SAMPLES):"), FoundFootprintTestLocations_080);
+		UE_LOG(LogTemp, Warning, TEXT("Testing combo [ShapeValue >= 0.70 AND MountainMask > 0.80]"));
+		
+		float TotalAverageDiameter = 0.f;
+		
+		for (int32 LocationIdx = 0; LocationIdx < FoundFootprintTestLocations_080; LocationIdx++)
+		{
+			float TestBlockX = FootprintTestBlockX_080[LocationIdx];
+			float TestBlockY = FootprintTestBlockY_080[LocationIdx];
+			
+			UE_LOG(LogTemp, Warning, TEXT(""));
+			UE_LOG(LogTemp, Warning, TEXT("Location %d: BlockX=%.0f BlockY=%.0f"), LocationIdx + 1, TestBlockX, TestBlockY);
+			
+			// Sweep X direction (positive)
+			int32 MaxConsecutiveX_Pos = 0, CurrentConsecutiveX_Pos = 0;
+			for (float OffsetX = 50.f; OffsetX <= 2000.f; OffsetX += 50.f)
+			{
+				float ShapeVal = RemapShapeCurve(SampleContinentNoise(TestBlockX + OffsetX, TestBlockY));
+				float MountainVal = SampleMountainMask(TestBlockX + OffsetX, TestBlockY);
+				
+				if (ShapeVal >= 0.70f && MountainVal > 0.80f)
+				{
+					CurrentConsecutiveX_Pos++;
+					MaxConsecutiveX_Pos = FMath::Max(MaxConsecutiveX_Pos, CurrentConsecutiveX_Pos);
+				}
+				else
+				{
+					CurrentConsecutiveX_Pos = 0;
+				}
+			}
+			
+			// Sweep X direction (negative)
+			int32 MaxConsecutiveX_Neg = 0, CurrentConsecutiveX_Neg = 0;
+			for (float OffsetX = 50.f; OffsetX <= 2000.f; OffsetX += 50.f)
+			{
+				float ShapeVal = RemapShapeCurve(SampleContinentNoise(TestBlockX - OffsetX, TestBlockY));
+				float MountainVal = SampleMountainMask(TestBlockX - OffsetX, TestBlockY);
+				
+				if (ShapeVal >= 0.70f && MountainVal > 0.80f)
+				{
+					CurrentConsecutiveX_Neg++;
+					MaxConsecutiveX_Neg = FMath::Max(MaxConsecutiveX_Neg, CurrentConsecutiveX_Neg);
+				}
+				else
+				{
+					CurrentConsecutiveX_Neg = 0;
+				}
+			}
+			
+			int32 EstimatedDiameterX = (MaxConsecutiveX_Pos + MaxConsecutiveX_Neg) * 50;
+			
+			// Sweep Y direction (positive)
+			int32 MaxConsecutiveY_Pos = 0, CurrentConsecutiveY_Pos = 0;
+			for (float OffsetY = 50.f; OffsetY <= 2000.f; OffsetY += 50.f)
+			{
+				float ShapeVal = RemapShapeCurve(SampleContinentNoise(TestBlockX, TestBlockY + OffsetY));
+				float MountainVal = SampleMountainMask(TestBlockX, TestBlockY + OffsetY);
+				
+				if (ShapeVal >= 0.70f && MountainVal > 0.80f)
+				{
+					CurrentConsecutiveY_Pos++;
+					MaxConsecutiveY_Pos = FMath::Max(MaxConsecutiveY_Pos, CurrentConsecutiveY_Pos);
+				}
+				else
+				{
+					CurrentConsecutiveY_Pos = 0;
+				}
+			}
+			
+			// Sweep Y direction (negative)
+			int32 MaxConsecutiveY_Neg = 0, CurrentConsecutiveY_Neg = 0;
+			for (float OffsetY = 50.f; OffsetY <= 2000.f; OffsetY += 50.f)
+			{
+				float ShapeVal = RemapShapeCurve(SampleContinentNoise(TestBlockX, TestBlockY - OffsetY));
+				float MountainVal = SampleMountainMask(TestBlockX, TestBlockY - OffsetY);
+				
+				if (ShapeVal >= 0.70f && MountainVal > 0.80f)
+				{
+					CurrentConsecutiveY_Neg++;
+					MaxConsecutiveY_Neg = FMath::Max(MaxConsecutiveY_Neg, CurrentConsecutiveY_Neg);
+				}
+				else
+				{
+					CurrentConsecutiveY_Neg = 0;
+				}
+			}
+			
+			int32 EstimatedDiameterY = (MaxConsecutiveY_Pos + MaxConsecutiveY_Neg) * 50;
+			float LocationAverageDiameter = (EstimatedDiameterX + EstimatedDiameterY) / 2.f;
+			TotalAverageDiameter += LocationAverageDiameter;
+			
+			UE_LOG(LogTemp, Warning, TEXT("  X-direction: %d blocks | Y-direction: %d blocks | Average: ~%.0f blocks"),
+				EstimatedDiameterX, EstimatedDiameterY, LocationAverageDiameter);
+		}
+		
+		float FinalAverageDiameter = TotalAverageDiameter / FoundFootprintTestLocations_080;
+		UE_LOG(LogTemp, Warning, TEXT(""));
+		UE_LOG(LogTemp, Warning, TEXT("FINAL AVERAGE FOOTPRINT DIAMETER (across %d samples): ~%.0f blocks"),
+			FoundFootprintTestLocations_080, FinalAverageDiameter);
+	}
+	
 	UE_LOG(LogTemp, Warning, TEXT(""));
 	UE_LOG(LogTemp, Warning, TEXT("HIGHEST PEAK FOUND:"));
 	UE_LOG(LogTemp, Warning, TEXT("  Location: BlockX=%.2f BlockY=%.2f (WorldX=%.2f WorldY=%.2f)"), 
